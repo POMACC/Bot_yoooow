@@ -99,6 +99,7 @@ def welcome_to_group(update):
 # /START — ПРИВЕТСТВИЕ В ЛИЧКЕ
 # ===================================
 
+
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
     if message.chat.type != "private":
@@ -108,9 +109,7 @@ def send_welcome(message):
         "Привет, это наша жаба-зазывала! 🐸\n\n"
         "Чтобы жаба начала работать, добавь её "
         "в групповой чат. Здесь она не отвечает "
-        "на команды сбора.\n\n"
-        "А чтобы жаба тебя запомнила, напиши "
-        "в группе команду /in."
+        "на команды сбора."
     )
 
     bot.send_message(message.chat.id, text)
