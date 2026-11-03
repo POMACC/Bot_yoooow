@@ -3,17 +3,13 @@ import telebot
 import os
 import redis
 
-TOKEN = os.environ.get('BOT_TOKEN', '9216230949:AAGc0N_hX9NyTZArI_KhhWGXrGJV7y2w3DM')
+# Вставь свой реальный токен прямо сюда в кавычки:
+TOKEN = "9216230949:AAGc0N_hX9NyTZArI_KhhWGXrGJV7y2w3DM"
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# Подключение к Redis (Vercel автоматически предоставит переменные окружения, если подключишь Redis-базу, либо можно использовать словарь для теста)
-# Для работы с Redis: REDIS_URL можно указать в переменных окружения Vercel
-redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379')
-try:
-    r = redis.from_url(redis_url)
-except:
-    r = None
+redis_url = os.environ.get('REDIS_URL')
+r = redis.from_url(redis_url) if redis_url else None
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
