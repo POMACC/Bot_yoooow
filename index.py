@@ -7,7 +7,10 @@ from flask import Flask, request, jsonify
 import telebot
 import redis
 
-# Настройки из Vercel
+# ===================================
+# НАСТРОЙКИ
+# ===================================
+
 TOKEN = os.environ["BOT_TOKEN"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 REDIS_URL = os.environ.get("REDIS_URL")
@@ -18,7 +21,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 bot = telebot.TeleBot(TOKEN, threaded=False)
 
-# Redis
+# Подключение к Redis
 r = redis.from_url(
     REDIS_URL,
     decode_responses=True,
@@ -26,6 +29,10 @@ r = redis.from_url(
     socket_timeout=5
 ) if REDIS_URL else None
 
+
+# ===================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ===================================
 
 def is_group(message):
     return message.chat.type in ("group", "supergroup")
@@ -72,14 +79,13 @@ def welcome_to_group(update):
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
 
-    # Срабатывает при добавлении бота,
-    # но не при обычной смене прав.
     if (
         old_status in ("left", "kicked")
         and new_status in ("member", "administrator")
     ):
         text = (
-            "Я жаба-зазывала 🐸\n\n"
+            "Привет! До вас не дописаться, "
+            "поэтому «жаба собрала» 🐸\n\n"
             "Напишите /in, чтобы я вас запомнила "
             "и могла позвать на общий сбор!\n\n"
             "А когда нужно собрать всех, "
@@ -90,7 +96,7 @@ def welcome_to_group(update):
 
 
 # ===================================
-# /START — ЛИЧНОЕ ПРИВЕТСТВИЕ
+# /START — ПРИВЕТСТВИЕ В ЛИЧКЕ
 # ===================================
 
 @bot.message_handler(commands=["start"])
@@ -203,6 +209,17 @@ def handle_out(message):
 
 @bot.message_handler(commands=["all", "everyone"])
 def handle_all(message):
+
+    # Если команду отправили в личные сообщения
+    if message.chat.type == "private":
+        bot.reply_to(
+            message,
+            "Квааа!! Стоп, а кого тут звать? 🐸\n"
+            "Добавь меня сначала в группу!"
+        )
+        return
+
+    # В обычной группе команда работает
     if not is_group(message):
         return
 
@@ -250,7 +267,7 @@ def handle_all(message):
 
         tags.append(tag)
 
-    # Разбиваем длинные списки на сообщения
+    # Разделение на сообщения при длинном списке
     prefix = "🐸 Общий сбор!\n\n"
     batch = prefix
 
