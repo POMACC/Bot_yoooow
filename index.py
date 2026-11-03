@@ -9,7 +9,6 @@ REDIS_URL = os.environ.get('REDIS_URL')
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# Подключение к базе Upstash
 db = redis.from_url(REDIS_URL, decode_responses=True) if REDIS_URL else None
 
 @bot.message_handler(commands=['in'])
@@ -27,8 +26,6 @@ def remove_user(message):
 @bot.message_handler(func=lambda message: True, content_types=['text', 'new_chat_members'])
 def handle_all(message):
     chat_id = str(message.chat.id)
-    
-    # Автоматически сохраняем тех, кто пишет или вступает
     if db:
         if message.from_user and not message.from_user.is_bot:
             db.hset(chat_id, str(message.from_user.id), message.from_user.first_name)
@@ -37,7 +34,6 @@ def handle_all(message):
                 if not new_user.is_bot:
                     db.hset(chat_id, str(new_user.id), new_user.first_name)
 
-    # Реакция на теги
     if message.text:
         text = message.text.lower()
         if any(cmd in text for cmd in ['/everyone', '/all', '@everyone', '@all', 'общий сбор']):
@@ -47,20 +43,15 @@ def handle_all(message):
                 mention_text = "Общий сбор!\n\n" + ", ".join(tags)
                 bot.reply_to(message, mention_text, parse_mode='HTML')
 
-# Системные функции для Vercel
-@app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
-@app.route('/<path:path>', methods=['GET', 'POST'])
-def webhook(path):
-    if request.method == 'POST':
-        if request.headers.get('content-type') == 'application/json':
-            json_string = request.get_data().decode('utf-8')
-            update = telebot.types.Update.de_json(json_string)
-            bot.process_new_updates([update])
-            return ''
-        return "OK"
-    else:
-        # Для GET-запросов устанавливаем вебхук
-        webhook_url = f"https://{request.host}/"
-        bot.remove_webhook()
-        bot.set_webhook(url=webhook_url)
-        return "Вебхук успешно установлен! Бот готов к работе."
+@app.route('/', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return ''
+    return "OK"
+
+@app.route('/', methods=['GET'])
+def index():
+    return "Бот работает!"
