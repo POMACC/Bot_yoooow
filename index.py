@@ -3,7 +3,7 @@ import telebot
 import os
 import redis
 
-TOKEN = os.environ.get('BOT_TOKEN', 'ТВОЙ_ТОКЕН')
+TOKEN = os.environ.get('BOT_TOKEN', '9216230949:AAGc0N_hX9NyTZArI_KhhWGXrGJV7y2w3DM')
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
