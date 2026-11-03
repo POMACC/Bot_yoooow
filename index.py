@@ -1,13 +1,13 @@
-
 import os
 import html
+import hmac
 import logging
 
 from flask import Flask, request, jsonify
 import telebot
 import redis
 
-# Конфигурация
+# Настройки из Vercel
 TOKEN = os.environ["BOT_TOKEN"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 REDIS_URL = os.environ.get("REDIS_URL")
@@ -16,16 +16,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
-# Синхронные обработчики для Flask webhook
 bot = telebot.TeleBot(TOKEN, threaded=False)
 
-# Подключение к Redis
+# Redis
 r = redis.from_url(
     REDIS_URL,
     decode_responses=True,
     socket_connect_timeout=5,
-    socket_timeout=5,
+    socket_timeout=5
 ) if REDIS_URL else None
 
 
@@ -45,8 +43,7 @@ def check_redis(message):
     if r is None:
         bot.reply_to(
             message,
-            "🐸 Хранилище пока не подключено. "
-            "Жаба никого не может запомнить."
+            "🐸 Хранилище пока не подключено."
         )
         return False
 
@@ -62,6 +59,39 @@ def check_redis(message):
         )
         return False
 
+
+# ===================================
+# ПРИВЕТСТВИЕ ПРИ ДОБАВЛЕНИИ В ГРУППУ
+# ===================================
+
+@bot.my_chat_member_handler()
+def welcome_to_group(update):
+    if update.chat.type not in ("group", "supergroup"):
+        return
+
+    old_status = update.old_chat_member.status
+    new_status = update.new_chat_member.status
+
+    # Срабатывает при добавлении бота,
+    # но не при обычной смене прав.
+    if (
+        old_status in ("left", "kicked")
+        and new_status in ("member", "administrator")
+    ):
+        text = (
+            "Я жаба-зазывала 🐸\n\n"
+            "Напишите /in, чтобы я вас запомнила "
+            "и могла позвать на общий сбор!\n\n"
+            "А когда нужно собрать всех, "
+            "просто напишите /all."
+        )
+
+        bot.send_message(update.chat.id, text)
+
+
+# ===================================
+# /START — ЛИЧНОЕ ПРИВЕТСТВИЕ
+# ===================================
 
 @bot.message_handler(commands=["start"])
 def send_welcome(message):
@@ -80,6 +110,10 @@ def send_welcome(message):
     bot.send_message(message.chat.id, text)
 
 
+# ===================================
+# /IN — ЗАПОМНИТЬ УЧАСТНИКА
+# ===================================
+
 @bot.message_handler(commands=["in"])
 def handle_in(message):
     if not is_group(message):
@@ -96,17 +130,19 @@ def handle_in(message):
     user_id = str(user.id)
     first_name = get_user_name(user)
 
-    # ID — уникальный ключ пользователя.
-    # Повторная регистрация обновляет запись.
     user_data = f"{user.username or ''}|{first_name}"
 
     try:
         key = get_chat_key(chat_id)
         already_registered = r.hexists(key, user_id)
         r.hset(key, user_id, user_data)
+
     except redis.RedisError:
         logger.exception("Registration failed")
-        bot.reply_to(message, "🐸 Не получилось записать тебя.")
+        bot.reply_to(
+            message,
+            "🐸 Не получилось записать тебя."
+        )
         return
 
     safe_name = html.escape(first_name)
@@ -118,6 +154,10 @@ def handle_in(message):
 
     bot.reply_to(message, text, parse_mode="HTML")
 
+
+# ===================================
+# /OUT — УДАЛИТЬ УЧАСТНИКА
+# ===================================
 
 @bot.message_handler(commands=["out"])
 def handle_out(message):
@@ -136,9 +176,13 @@ def handle_out(message):
             get_chat_key(message.chat.id),
             str(user.id)
         )
+
     except redis.RedisError:
         logger.exception("Removal failed")
-        bot.reply_to(message, "🐸 Не получилось обновить список.")
+        bot.reply_to(
+            message,
+            "🐸 Не получилось обновить список."
+        )
         return
 
     if removed:
@@ -153,7 +197,11 @@ def handle_out(message):
         )
 
 
-@bot.message_handler(commands=["everyone", "all"])
+# ===================================
+# /ALL — ОБЩИЙ СБОР
+# ===================================
+
+@bot.message_handler(commands=["all", "everyone"])
 def handle_all(message):
     if not is_group(message):
         return
@@ -165,8 +213,9 @@ def handle_all(message):
 
     try:
         users = r.hgetall(get_chat_key(chat_id))
+
     except redis.RedisError:
-        logger.exception("Unable to fetch participants")
+        logger.exception("Unable to fetch users")
         bot.reply_to(
             message,
             "🐸 Не удалось собрать участников."
@@ -183,13 +232,13 @@ def handle_all(message):
 
     tags = []
 
-    for user_id, user_data in sorted(
-        users.items(), key=lambda item: int(item[0])
-    ):
+    for user_id, user_data in sorted(users.items()):
         parts = user_data.split("|", 1)
 
         username = parts[0]
-        first_name = parts[1] if len(parts) > 1 else "Участник"
+        first_name = (
+            parts[1] if len(parts) > 1 else "Участник"
+        )
 
         if username:
             tag = f"@{html.escape(username)}"
@@ -201,8 +250,7 @@ def handle_all(message):
 
         tags.append(tag)
 
-    # Делим на сообщения, чтобы не превысить
-    # лимит Telegram в 4096 символов.
+    # Разбиваем длинные списки на сообщения
     prefix = "🐸 Общий сбор!\n\n"
     batch = prefix
 
@@ -227,6 +275,10 @@ def handle_all(message):
         )
 
 
+# ===================================
+# VERCEL / FLASK
+# ===================================
+
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
@@ -237,13 +289,15 @@ def index():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    # Проверяем, что запрос использует
-    # секрет зарегистрированного webhook.
     supplied_secret = request.headers.get(
-        "X-Telegram-Bot-Api-Secret-Token"
+        "X-Telegram-Bot-Api-Secret-Token",
+        ""
     )
 
-    if supplied_secret != WEBHOOK_SECRET:
+    if not hmac.compare_digest(
+        supplied_secret,
+        WEBHOOK_SECRET
+    ):
         return jsonify({"error": "Forbidden"}), 403
 
     if not request.is_json:
