@@ -1,92 +1,269 @@
-from flask import Flask, request
-import telebot
+
 import os
+import html
+import logging
+
+from flask import Flask, request, jsonify
+import telebot
 import redis
 
-# Вставь свой реальный токен прямо сюда в кавычки:
-TOKEN = "9216230949:AAGc0N_hX9NyTZArI_KhhWGXrGJV7y2w3DM"
-bot = telebot.TeleBot(TOKEN)
+# Конфигурация
+TOKEN = os.environ["BOT_TOKEN"]
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
+REDIS_URL = os.environ.get("REDIS_URL")
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 
-redis_url = os.environ.get('REDIS_URL')
-r = redis.from_url(redis_url) if redis_url else None
+# Синхронные обработчики для Flask webhook
+bot = telebot.TeleBot(TOKEN, threaded=False)
 
-@bot.message_handler(commands=['start'])
+# Подключение к Redis
+r = redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+    socket_connect_timeout=5,
+    socket_timeout=5,
+) if REDIS_URL else None
+
+
+def is_group(message):
+    return message.chat.type in ("group", "supergroup")
+
+
+def get_chat_key(chat_id):
+    return f"chat:{chat_id}:users"
+
+
+def get_user_name(user):
+    return user.first_name or user.username or "друг"
+
+
+def check_redis(message):
+    if r is None:
+        bot.reply_to(
+            message,
+            "🐸 Хранилище пока не подключено. "
+            "Жаба никого не может запомнить."
+        )
+        return False
+
+    try:
+        r.ping()
+        return True
+    except redis.RedisError:
+        logger.exception("Redis unavailable")
+        bot.reply_to(
+            message,
+            "🐸 Не могу добраться до списка участников. "
+            "Попробуй позже!"
+        )
+        return False
+
+
+@bot.message_handler(commands=["start"])
 def send_welcome(message):
+    if message.chat.type != "private":
+        return
+
     text = (
-        "Привет, это наша жаба-зазывала 🐸\n"
-        "Добавьте меня в группу, и пишите /in, чтобы я запомнила участников для общего сбора!"
+        "Привет, это наша жаба-зазывала! 🐸\n\n"
+        "Чтобы жаба начала работать, добавь её "
+        "в групповой чат. Здесь она не отвечает "
+        "на команды сбора.\n\n"
+        "А чтобы жаба тебя запомнила, напиши "
+        "в группе команду /in."
     )
-    bot.reply_to(message, text)
 
-@bot.message_handler(commands=['in'])
+    bot.send_message(message.chat.id, text)
+
+
+@bot.message_handler(commands=["in"])
 def handle_in(message):
-    chat_id = message.chat.id
+    if not is_group(message):
+        return
+
+    if not check_redis(message):
+        return
+
     user = message.from_user
-    user_id = user.id
-    username = user.username
-    first_name = user.first_name or "User"
+    if not user:
+        return
 
-    # Сохраняем пользователя в Redis (сет для конкретного чата)
-    if r:
-        # Храним данные в формате JSON или просто строку с именем и id/username
-        user_data = f"{username}|{first_name}|{user_id}"
-        r.sadd(f"chat:{chat_id}:users", user_data)
-    
-    bot.reply_to(message, f"🐸 Жаба записала тебя, {first_name}!")
+    chat_id = message.chat.id
+    user_id = str(user.id)
+    first_name = get_user_name(user)
 
-@bot.message_handler(commands=['out'])
+    # ID — уникальный ключ пользователя.
+    # Повторная регистрация обновляет запись.
+    user_data = f"{user.username or ''}|{first_name}"
+
+    try:
+        key = get_chat_key(chat_id)
+        already_registered = r.hexists(key, user_id)
+        r.hset(key, user_id, user_data)
+    except redis.RedisError:
+        logger.exception("Registration failed")
+        bot.reply_to(message, "🐸 Не получилось записать тебя.")
+        return
+
+    safe_name = html.escape(first_name)
+
+    if already_registered:
+        text = f"🐸 {safe_name}, я тебя уже помню!"
+    else:
+        text = f"🐸 Запомнила тебя, {safe_name}!"
+
+    bot.reply_to(message, text, parse_mode="HTML")
+
+
+@bot.message_handler(commands=["out"])
 def handle_out(message):
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    
-    if r:
-        # Удаляем пользователя из базы чата
-        users = r.smembers(f"chat:{chat_id}:users")
-        for u in users:
-            u_str = u.decode('utf-8')
-            if str(user_id) in u_str:
-                r.srem(f"chat:{chat_id}:users", u)
-                
-    bot.reply_to(message, "🐸 Жаба вычеркнула тебя из списка.")
+    if not is_group(message):
+        return
 
-@bot.message_handler(commands=['everyone', 'all'])
+    if not check_redis(message):
+        return
+
+    user = message.from_user
+    if not user:
+        return
+
+    try:
+        removed = r.hdel(
+            get_chat_key(message.chat.id),
+            str(user.id)
+        )
+    except redis.RedisError:
+        logger.exception("Removal failed")
+        bot.reply_to(message, "🐸 Не получилось обновить список.")
+        return
+
+    if removed:
+        bot.reply_to(
+            message,
+            "🐸 Вычеркнула тебя из списка!"
+        )
+    else:
+        bot.reply_to(
+            message,
+            "🐸 Тебя и так нет в моём списке."
+        )
+
+
+@bot.message_handler(commands=["everyone", "all"])
 def handle_all(message):
+    if not is_group(message):
+        return
+
+    if not check_redis(message):
+        return
+
     chat_id = message.chat.id
+
+    try:
+        users = r.hgetall(get_chat_key(chat_id))
+    except redis.RedisError:
+        logger.exception("Unable to fetch participants")
+        bot.reply_to(
+            message,
+            "🐸 Не удалось собрать участников."
+        )
+        return
+
+    if not users:
+        bot.reply_to(
+            message,
+            "🐸 Пока никого не запомнила! "
+            "Пусть участники напишут /in."
+        )
+        return
+
     tags = []
 
-    if r:
-        users = r.smembers(f"chat:{chat_id}:users")
-        for u in users:
-            u_str = u.decode('utf-8')
-            parts = u_str.split('|')
-            if len(parts) >= 3:
-                username, first_name, user_id = parts[0], parts[1], parts[2]
-                if username and username != 'None':
-                    tags.append(f"@{username}")
-                else:
-                    # Если нет юзернейма, тегаем по имени через Markdown/HTML (скрытая ссылка на профиль)
-                    tags.append(f"[{first_name}](tg://user?id={user_id})")
+    for user_id, user_data in sorted(
+        users.items(), key=lambda item: int(item[0])
+    ):
+        parts = user_data.split("|", 1)
 
-    if tags:
-        text = "🐸 Общий сбор!\n\n" + " ".join(tags)
-        bot.send_message(chat_id, text, parse_mode="Markdown")
-    else:
-        bot.reply_to(message, "🐸 Никто еще не записался! Пусть участники напишут /in")
+        username = parts[0]
+        first_name = parts[1] if len(parts) > 1 else "Участник"
 
-@app.route('/', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return '', 200
-    else:
-        return 'Forbidden', 403
+        if username:
+            tag = f"@{html.escape(username)}"
+        else:
+            tag = (
+                f'<a href="tg://user?id={user_id}">'
+                f'{html.escape(first_name)}</a>'
+            )
 
-@app.route('/')
+        tags.append(tag)
+
+    # Делим на сообщения, чтобы не превысить
+    # лимит Telegram в 4096 символов.
+    prefix = "🐸 Общий сбор!\n\n"
+    batch = prefix
+
+    for tag in tags:
+        addition = tag + " "
+
+        if len(batch) + len(addition) > 3500:
+            bot.send_message(
+                chat_id,
+                batch.strip(),
+                parse_mode="HTML"
+            )
+            batch = prefix
+
+        batch += addition
+
+    if batch.strip() != prefix.strip():
+        bot.send_message(
+            chat_id,
+            batch.strip(),
+            parse_mode="HTML"
+        )
+
+
+@app.route("/", methods=["GET"])
 def index():
-    return 'Бот работает и принимает запросы!'
+    return jsonify({
+        "status": "ok",
+        "message": "Жаба на связи 🐸"
+    }), 200
 
-if __name__ == '__main__':
-    app.run(debug=True)
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    # Проверяем, что запрос использует
+    # секрет зарегистрированного webhook.
+    supplied_secret = request.headers.get(
+        "X-Telegram-Bot-Api-Secret-Token"
+    )
+
+    if supplied_secret != WEBHOOK_SECRET:
+        return jsonify({"error": "Forbidden"}), 403
+
+    if not request.is_json:
+        return jsonify({"error": "Invalid content type"}), 415
+
+    try:
+        update_data = request.get_json()
+        update = telebot.types.Update.de_json(update_data)
+        bot.process_new_updates([update])
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception:
+        logger.exception("Webhook processing failed")
+        return jsonify({"error": "Internal error"}), 500
+
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
+    )
