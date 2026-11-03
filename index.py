@@ -29,7 +29,8 @@ def handle_all(message):
     bot.reply_to(message, "🐸 Общий сбор! (тут будут теги участников)")
 
 # Прием запросов от Telegram через вебхук Vercel
-@app.route(f'/{TOKEN}', methods=['POST'])
+# Прием запросов от Telegram через вебхук Vercel на корневой адрес /
+@app.route('/', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
@@ -42,6 +43,3 @@ def webhook():
 @app.route('/')
 def index():
     return 'Бот работает и принимает запросы!'
-
-if __name__ == '__main__':
-    app.run(debug=True)
