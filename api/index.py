@@ -48,18 +48,19 @@ def handle_all(message):
                 bot.reply_to(message, mention_text, parse_mode='HTML')
 
 # Системные функции для Vercel
-@app.route('/', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return ''
-    return "OK"
-
-@app.route('/', methods=['GET'])
-def index():
-    webhook_url = f"https://{request.host}/"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    return "Вебхук установлен. Бот готов!"
+@app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
+@app.route('/<path:path>', methods=['GET', 'POST'])
+def webhook(path):
+    if request.method == 'POST':
+        if request.headers.get('content-type') == 'application/json':
+            json_string = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_string)
+            bot.process_new_updates([update])
+            return ''
+        return "OK"
+    else:
+        # Для GET-запросов устанавливаем вебхук
+        webhook_url = f"https://{request.host}/"
+        bot.remove_webhook()
+        bot.set_webhook(url=webhook_url)
+        return "Вебхук успешно установлен! Бот готов к работе."
