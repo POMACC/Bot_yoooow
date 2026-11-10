@@ -11,8 +11,10 @@
 
 import html
 import hmac
+import json
 import logging
 import os
+import re
 import sys
 import uuid
 from contextvars import ContextVar
@@ -28,6 +30,10 @@ WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
 REDIS_URL = os.environ.get("REDIS_URL")
 TTL = 7 * 24 * 60 * 60
 LOCK_TTL = 300
+GATHER_COMMAND = re.compile(
+    r"^\s*(?:/(?:all|everyone)(?:@(?P<bot>[A-Za-z0-9_]+))?|@all)(?=\s|$)",
+    re.IGNORECASE,
+)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 app = Flask(__name__)
@@ -153,7 +159,7 @@ def handle_out(message):
           else "🐸 Тебя и так нет в моём списке.")
 
 
-def build_batches(users):
+def build_batches(users, note=""):
     prefix = "🐸 Общий сбор!\n\n"
     batch = prefix
     batches = []
@@ -172,11 +178,27 @@ def build_batches(users):
         batch += tag
     if batch != prefix:
         batches.append(batch.strip())
+    if batches and note:
+        # Длинный текст делим до экранирования HTML, чтобы не разрывать сущности.
+        note_parts = [html.escape(note[i:i + 1700], quote=False)
+                      for i in range(0, len(note), 1700)]
+        combined = prefix + note_parts[-1] + "\n\n" + batches[0][len(prefix):]
+        if len(combined.encode("utf-16-le")) // 2 <= 3500:
+            batches[0] = combined
+            note_parts.pop()
+        batches = [prefix + part for part in note_parts] + batches
     return batches
 
 
-@bot.message_handler(commands=["all", "everyone"])
+@bot.message_handler(func=lambda message: bool(GATHER_COMMAND.match(message.text or "")))
 def handle_all(message):
+    command = GATHER_COMMAND.match(message.text or "")
+    if not command:
+        return
+    addressed_bot = command.group("bot")
+    if addressed_bot and addressed_bot.lower() != bot.user.username.lower():
+        return
+
     if message.chat.type == "private":
         reply(message, "Квааа!! Стоп, а кого тут звать? 🐸\n"
               "Добавь меня сначала в группу!")
@@ -186,13 +208,13 @@ def handle_all(message):
 
     # Сохраняем план сбора: при повторной доставке события состав частей
     # не меняется и уже отправленные части пропускаются.
-    import json
     plan_key = f"bot:{BOT_ID}:update:{current_update.get()}:plan"
     stored = r.get(plan_key)
     if stored:
         batches = json.loads(stored)
     else:
-        batches = build_batches(r.hgetall(get_chat_key(message.chat.id)))
+        note = message.text[command.end():].strip()
+        batches = build_batches(r.hgetall(get_chat_key(message.chat.id)), note)
         r.set(plan_key, json.dumps(batches, ensure_ascii=False), ex=TTL)
     if not batches:
         reply(message, "🐸 Пока никого не запомнила! "
